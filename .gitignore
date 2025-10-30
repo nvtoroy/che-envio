@@ -15,4 +15,7 @@ DerivedData/
 # IDE
 .vscode/
 .idea/
+
+# AI Agent Instructions
 .github/
+AGENTS.md

@@ -74,7 +74,7 @@ struct ContentView: View {
                         Text("Correo Argentino - Seguimiento")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        Text("v1.0 (30/10/2025)")
+                        Text("v1.1 (30/10/2025)")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
