@@ -4,9 +4,32 @@ import SwiftUI
 
 // MARK: - Data Models
 struct TrackingSettings: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case trackingNumber
+        case producto
+        case pais
+        case isAutoFillEnabled
+    }
+
     let trackingNumber: String
     let producto: String
     let pais: String
+    let isAutoFillEnabled: Bool
+
+    init(trackingNumber: String, producto: String, pais: String, isAutoFillEnabled: Bool) {
+        self.trackingNumber = trackingNumber
+        self.producto = producto
+        self.pais = pais
+        self.isAutoFillEnabled = isAutoFillEnabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.trackingNumber = try container.decodeIfPresent(String.self, forKey: .trackingNumber) ?? ""
+        self.producto = try container.decodeIfPresent(String.self, forKey: .producto) ?? ""
+        self.pais = try container.decodeIfPresent(String.self, forKey: .pais) ?? ""
+        self.isAutoFillEnabled = try container.decodeIfPresent(Bool.self, forKey: .isAutoFillEnabled) ?? false
+    }
 }
 
 struct TrackingInfo {
@@ -22,6 +45,97 @@ struct TrackingMovement: Identifiable {
     let planta: String
     let historia: String
     let estado: String
+}
+
+struct TrackingHistoryMeta: Codable {
+    enum Source: String, Codable {
+        case manual
+        case paste
+        case api
+    }
+
+    var source: Source
+    var note: String
+
+    init(source: Source, note: String = "") {
+        self.source = source
+        self.note = note
+    }
+}
+
+struct TrackingHistoryEntry: Identifiable, Codable {
+    private enum CodingKeys: String, CodingKey {
+        case code
+        case left
+        case digits
+        case right
+        case lastCheckedAt
+        case meta
+    }
+
+    private static func makeStorageDateFormatter() -> ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withColonSeparatorInTimeZone]
+        formatter.timeZone = TimeZone(identifier: "America/Argentina/Buenos_Aires")
+        return formatter
+    }
+
+    private static func makeDisplayDateFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "es_AR")
+        formatter.timeZone = TimeZone(identifier: "America/Argentina/Buenos_Aires")
+        formatter.dateFormat = "dd/MM/yyyy HH:mm"
+        return formatter
+    }
+
+    let code: String
+    let left: String
+    let digits: String
+    let right: String
+    var lastCheckedAt: Date
+    var meta: TrackingHistoryMeta
+
+    var id: String { code.uppercased() }
+
+    var formattedLastCheckedAt: String {
+        Self.makeDisplayDateFormatter().string(from: lastCheckedAt)
+    }
+
+    init(code: String, left: String, digits: String, right: String, lastCheckedAt: Date, meta: TrackingHistoryMeta) {
+        self.code = code
+        self.left = left
+        self.digits = digits
+        self.right = right
+        self.lastCheckedAt = lastCheckedAt
+        self.meta = meta
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.code = try container.decode(String.self, forKey: .code)
+        self.left = try container.decode(String.self, forKey: .left)
+        self.digits = try container.decode(String.self, forKey: .digits)
+        self.right = try container.decode(String.self, forKey: .right)
+        let dateString = try container.decode(String.self, forKey: .lastCheckedAt)
+        guard let parsedDate = TrackingHistoryEntry.makeStorageDateFormatter().date(from: dateString) else {
+            throw DecodingError.dataCorruptedError(forKey: .lastCheckedAt,
+                                                   in: container,
+                                                   debugDescription: "Invalid date format: \(dateString)")
+        }
+        self.lastCheckedAt = parsedDate
+        self.meta = try container.decodeIfPresent(TrackingHistoryMeta.self, forKey: .meta) ?? TrackingHistoryMeta(source: .manual)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(code, forKey: .code)
+        try container.encode(left, forKey: .left)
+        try container.encode(digits, forKey: .digits)
+        try container.encode(right, forKey: .right)
+        let dateString = TrackingHistoryEntry.makeStorageDateFormatter().string(from: lastCheckedAt)
+        try container.encode(dateString, forKey: .lastCheckedAt)
+        try container.encode(meta, forKey: .meta)
+    }
 }
 
 @MainActor
@@ -57,12 +171,17 @@ class CorreoCheckViewModel: ObservableObject {
     @Published var statusMessage: String = "Listo para consultar..."
     @Published var lastUpdateTime: String = ""
     @Published var isAutoFillEnabled: Bool = false
+    @Published var historyEntries: [TrackingHistoryEntry] = []
+    @Published var historySearchTerm: String = ""
     
     private let settingsKey = "CorreoCheckSettings"
+    private let historyKey = "CorreoCheckHistory"
     private let apiURL = "https://www.correoargentino.com.ar/sites/all/modules/custom/ca_forms/api/wsFacade.php"
+    private var lastInputSource: TrackingHistoryMeta.Source = .manual
     
     init() {
         loadSettings()
+        loadHistory()
         updateLastUpdateTime()
     }
 
@@ -74,19 +193,51 @@ class CorreoCheckViewModel: ObservableObject {
             self.trackingNumber = settings.trackingNumber
             self.producto = settings.producto
             self.pais = settings.pais
+            self.isAutoFillEnabled = settings.isAutoFillEnabled
         }
     }
     
     func saveSettings() {
-        let settings = TrackingSettings(trackingNumber: trackingNumber, producto: producto, pais: pais)
+        let settings = TrackingSettings(
+            trackingNumber: trackingNumber,
+            producto: producto,
+            pais: pais,
+            isAutoFillEnabled: isAutoFillEnabled
+        )
         if let data = try? JSONEncoder().encode(settings) {
             UserDefaults.standard.set(data, forKey: settingsKey)
+        }
+    }
+
+    private func loadHistory() {
+        guard let data = UserDefaults.standard.data(forKey: historyKey) else {
+            historyEntries = []
+            return
+        }
+
+        do {
+            let decoder = JSONDecoder()
+            historyEntries = try decoder.decode([TrackingHistoryEntry].self, from: data)
+            historyEntries.sort { $0.lastCheckedAt > $1.lastCheckedAt }
+        } catch {
+            historyEntries = []
+        }
+    }
+
+    private func saveHistory() {
+        do {
+            let encoder = JSONEncoder()
+            let data = try encoder.encode(historyEntries)
+            UserDefaults.standard.set(data, forKey: historyKey)
+        } catch {
+            // Persistence is best-effort; ignore failures.
         }
     }
 
     // MARK: - Clipboard Handling
     func toggleMode() {
         isAutoFillEnabled.toggle()
+        saveSettings()
     }
 
     func copyToClipboard() {
@@ -105,7 +256,16 @@ class CorreoCheckViewModel: ObservableObject {
         pasteboard.setString(textToCopy, forType: .string)
     }
 
+    func copyToClipboard(fullCode: String) {
+        let trimmed = fullCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(trimmed, forType: .string)
+    }
+
     func pasteFromClipboard() {
+        lastInputSource = .paste
         let pasteboard = NSPasteboard.general
         guard let rawString = pasteboard.string(forType: .string) else { return }
 
@@ -149,6 +309,9 @@ class CorreoCheckViewModel: ObservableObject {
             updateResult(success: false)
             return
         }
+
+        recordHistory(source: lastInputSource)
+        lastInputSource = .manual
         
         isLoading = true
         statusMessage = "Consultando..."
@@ -315,9 +478,69 @@ class CorreoCheckViewModel: ObservableObject {
         pais = String(suffixPart)
     }
 
+    // MARK: - History Management
+    func filteredHistory() -> [TrackingHistoryEntry] {
+        let query = historySearchTerm.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else {
+            return historyEntries
+        }
+
+        return historyEntries.filter { entry in
+            entry.code.lowercased().contains(query) ||
+            entry.left.lowercased().contains(query) ||
+            entry.digits.lowercased().contains(query) ||
+            entry.right.lowercased().contains(query)
+        }
+    }
+
+    func clearHistory() {
+        historyEntries.removeAll()
+        saveHistory()
+    }
+
+    func deleteHistoryEntries(with codes: Set<String>) {
+        guard !codes.isEmpty else { return }
+        historyEntries.removeAll { codes.contains($0.code) }
+        saveHistory()
+    }
+
+    func recordHistory(source: TrackingHistoryMeta.Source) {
+        let sanitizedLeft = sanitizeLetters(producto)
+        let sanitizedRight = sanitizeLetters(pais)
+        let sanitizedDigits = trackingNumber.filter { $0.isNumber }
+
+        guard !sanitizedLeft.isEmpty,
+              !sanitizedRight.isEmpty,
+              !sanitizedDigits.isEmpty else {
+            return
+        }
+
+        let code = "\(sanitizedLeft)\(sanitizedDigits)\(sanitizedRight)"
+        let now = Date()
+
+        if let index = historyEntries.firstIndex(where: { $0.code.caseInsensitiveCompare(code) == .orderedSame }) {
+            historyEntries[index].lastCheckedAt = now
+            historyEntries[index].meta.source = source
+        } else {
+            let entry = TrackingHistoryEntry(
+                code: code,
+                left: sanitizedLeft,
+                digits: sanitizedDigits,
+                right: sanitizedRight,
+                lastCheckedAt: now,
+                meta: TrackingHistoryMeta(source: source)
+            )
+            historyEntries.append(entry)
+        }
+
+        historyEntries.sort { $0.lastCheckedAt > $1.lastCheckedAt }
+        saveHistory()
+    }
+
     func clearFields() {
         producto = ""
         trackingNumber = ""
         pais = ""
+        saveSettings()
     }
 }

@@ -6,6 +6,10 @@ struct ContentView: View {
     @FocusState private var focusedField: Field?
     private let letterFormatter = AllowedCharactersFormatter(allowed: CharacterSet.letters, maxLength: 2) { $0.uppercased() }
     private let digitsFormatter = AllowedCharactersFormatter(allowed: CharacterSet.decimalDigits)
+    @State private var isHistoryPresented = false
+    @State private var selectedHistoryCodes: Set<String> = []
+    @State private var showHistoryCopyToast = false
+    @State private var copyToastMessage = ""
     
     enum Field {
         case producto, trackingNumber, pais, consultar, cerrar
@@ -87,9 +91,39 @@ struct ContentView: View {
             
             // Раздел ввода данных
             VStack(alignment: .leading, spacing: 15) {
-                HStack(alignment: .top, spacing: 8) {
-                    Text("Número de seguimiento:")
-                        .frame(width: 180, alignment: .leading)
+                HStack(alignment: .bottom, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Número de seguimiento:")
+                        Button(action: {
+                            isHistoryPresented.toggle()
+                        }) {
+                            Image(systemName: "clock")
+                                .font(.system(size: 14))
+                                .frame(width: 36, height: 28)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(Color.gray.opacity(0.15))
+                                )
+                                .foregroundColor(.white)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Mostrar historial")
+                        .popover(isPresented: $isHistoryPresented, arrowEdge: .bottom) {
+                            HistoryPopoverView(
+                                viewModel: viewModel,
+                                isPresented: $isHistoryPresented,
+                                selectedCodes: $selectedHistoryCodes,
+                                onSelect: { entry in
+                                    applyHistoryEntry(entry)
+                                },
+                                onCopy: { entry in
+                                    handleHistoryCopy(entry)
+                                }
+                            )
+                            .frame(width: 420, height: 320)
+                        }
+                    }
+                    .frame(width: 180, alignment: .leading)
 
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 8) {
@@ -98,9 +132,6 @@ struct ContentView: View {
                                 .frame(width: 40)
                                 .multilineTextAlignment(.center)
                                 .focused($focusedField, equals: .producto)
-                                .onSubmit {
-                                    focusedField = .trackingNumber
-                                }
                                 .onKeyPress(.tab) {
                                     focusedField = .trackingNumber
                                     return .handled
@@ -113,9 +144,6 @@ struct ContentView: View {
                                 .textFieldStyle(RoundedBorderTextFieldStyle())
                                 .frame(width: 150)
                                 .focused($focusedField, equals: .trackingNumber)
-                                .onSubmit {
-                                    focusedField = .pais
-                                }
                                 .onKeyPress(.tab) {
                                     focusedField = .pais
                                     return .handled
@@ -129,9 +157,6 @@ struct ContentView: View {
                                 .frame(width: 40)
                                 .multilineTextAlignment(.center)
                                 .focused($focusedField, equals: .pais)
-                                .onSubmit {
-                                    viewModel.checkTracking()
-                                }
                                 .onKeyPress(.tab) {
                                     focusedField = .consultar
                                     return .handled
@@ -177,17 +202,14 @@ struct ContentView: View {
                             Button(action: {
                                 viewModel.toggleMode()
                             }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: viewModel.isAutoFillEnabled ? "textformat.abc" : "textformat.123")
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundColor(.primary)
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .fill(Color.gray.opacity(0.15))
-                                )
+                                Image(systemName: viewModel.isAutoFillEnabled ? "textformat.abc" : "textformat.123")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .frame(width: 36, height: 28)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(Color.gray.opacity(0.15))
+                                    )
+                                    .foregroundColor(.white)
                             }
                             .buttonStyle(.plain)
 
@@ -230,6 +252,7 @@ struct ContentView: View {
                             .cornerRadius(6)
                         }
                         .buttonStyle(PlainButtonStyle())
+                        .keyboardShortcut(.defaultAction)
                         .focused($focusedField, equals: .consultar)
                         .disabled(viewModel.isLoading || viewModel.trackingNumber.isEmpty)
                         .onKeyPress(.tab) {
@@ -416,6 +439,21 @@ struct ContentView: View {
             .padding(.bottom, 10)
         }
         .frame(minWidth: 650, maxWidth: 650, minHeight: 500, maxHeight: .infinity)
+        .overlay(alignment: .bottom) {
+            if showHistoryCopyToast {
+                Text(copyToastMessage)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule()
+                            .fill(Color.black.opacity(0.75))
+                    )
+                    .padding(.bottom, 16)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+        }
         .overlay(alignment: .topTrailing) {
             // Невидимая кнопка для ESC
             Button(action: {
@@ -442,6 +480,33 @@ struct ContentView: View {
             guard newValue == .trackingNumber, !viewModel.trackingNumber.isEmpty else { return }
             DispatchQueue.main.async {
                 (NSApp?.keyWindow?.firstResponder as? NSTextView)?.selectAll(nil)
+            }
+        }
+        .onDisappear {
+            viewModel.saveSettings()
+        }
+    }
+
+    private func applyHistoryEntry(_ entry: TrackingHistoryEntry) {
+        isHistoryPresented = false
+        viewModel.producto = entry.left
+        viewModel.trackingNumber = entry.digits
+        viewModel.pais = entry.right
+        selectedHistoryCodes.removeAll()
+        DispatchQueue.main.async {
+            focusedField = .trackingNumber
+        }
+    }
+
+    private func handleHistoryCopy(_ entry: TrackingHistoryEntry) {
+        viewModel.copyToClipboard(fullCode: entry.code)
+        copyToastMessage = "Copiado"
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showHistoryCopyToast = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showHistoryCopyToast = false
             }
         }
     }
@@ -480,6 +545,195 @@ struct ContentView: View {
             return "📥"
         } else {
             return "📌"
+        }
+    }
+}
+
+private struct HistoryPopoverView: View {
+    @ObservedObject var viewModel: CorreoCheckViewModel
+    @Binding var isPresented: Bool
+    @Binding var selectedCodes: Set<String>
+    let onSelect: (TrackingHistoryEntry) -> Void
+    let onCopy: (TrackingHistoryEntry) -> Void
+
+    private var filteredEntries: [TrackingHistoryEntry] {
+        viewModel.filteredHistory()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Historial de consultas")
+                    .font(.system(size: 14, weight: .semibold))
+                Spacer()
+                Button {
+                    isPresented = false
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cerrar historial")
+            }
+
+            TextField("Buscar o filtrar", text: $viewModel.historySearchTerm)
+                .textFieldStyle(RoundedBorderTextFieldStyle())
+
+            if filteredEntries.isEmpty {
+                VStack(spacing: 6) {
+                    Text(viewModel.historyEntries.isEmpty ? "Sin registros todavía" : "Sin coincidencias")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 160, alignment: .center)
+            } else {
+                VStack(spacing: 0) {
+                    HStack(spacing: 12) {
+                        Text("")
+                            .frame(width: 24, alignment: .leading)
+                            .accessibilityHidden(true)
+
+                        Text("Última verificación")
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(width: 140, alignment: .leading)
+
+                        Text("Código")
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        Text("Copiar")
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(width: 60, alignment: .center)
+                    }
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 10)
+                    .background(Color.gray.opacity(0.15))
+
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(filteredEntries) { entry in
+                                HistoryRow(
+                                    entry: entry,
+                                    isSelected: selectionBinding(for: entry),
+                                    onSelect: {
+                                        onSelect(entry)
+                                    },
+                                    onCopy: {
+                                        onCopy(entry)
+                                    },
+                                    copyAccessibilityLabel: "Copiar código \(entry.code) completo"
+                                )
+                            }
+                        }
+                    }
+                    .frame(maxHeight: .infinity)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+                    )
+                }
+            }
+
+            HStack {
+                Button("Limpiar") {
+                    viewModel.clearHistory()
+                    selectedCodes.removeAll()
+                }
+                .disabled(viewModel.historyEntries.isEmpty)
+
+                Button("Eliminar seleccionados") {
+                    viewModel.deleteHistoryEntries(with: selectedCodes)
+                    selectedCodes.removeAll()
+                }
+                .disabled(selectedCodes.isEmpty)
+
+                Spacer()
+
+                Button("Cerrar") {
+                    isPresented = false
+                }
+            }
+            .font(.system(size: 11, weight: .medium))
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(NSColor.windowBackgroundColor).opacity(0.8))
+        .onDisappear {
+            viewModel.historySearchTerm = ""
+            selectedCodes.removeAll()
+        }
+        .onExitCommand {
+            isPresented = false
+        }
+        .onChange(of: viewModel.historyEntries.map(\.code)) { _, codes in
+            let existing = Set(codes)
+            selectedCodes.formIntersection(existing)
+        }
+    }
+
+    private func selectionBinding(for entry: TrackingHistoryEntry) -> Binding<Bool> {
+        Binding(
+            get: {
+                selectedCodes.contains(entry.code)
+            },
+            set: { newValue in
+                if newValue {
+                    selectedCodes.insert(entry.code)
+                } else {
+                    selectedCodes.remove(entry.code)
+                }
+            }
+        )
+    }
+
+    private struct HistoryRow: View {
+        let entry: TrackingHistoryEntry
+        @Binding var isSelected: Bool
+        let onSelect: () -> Void
+        let onCopy: () -> Void
+        let copyAccessibilityLabel: String
+
+        var body: some View {
+            HStack(spacing: 12) {
+                Toggle("", isOn: $isSelected)
+                    .labelsHidden()
+                    .toggleStyle(CheckboxToggleStyle())
+                    .frame(width: 24, alignment: .leading)
+
+                Text(entry.formattedLastCheckedAt)
+                    .font(.system(size: 11))
+                    .frame(width: 140, alignment: .leading)
+
+                Button(action: onSelect) {
+                    Text(entry.code)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.primary)
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button(action: onCopy) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 12))
+                        .frame(width: 36, height: 24)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.gray.opacity(0.15))
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(copyAccessibilityLabel)
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .background(Color.clear)
+            .overlay(
+                Rectangle()
+                    .fill(Color.gray.opacity(0.15))
+                    .frame(height: 0.5),
+                alignment: .bottom
+            )
         }
     }
 }
