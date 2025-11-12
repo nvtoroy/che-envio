@@ -2,6 +2,10 @@
 
 macOS приложение для отслеживания посылок Correo Argentino
 
+## Версия
+
+- Текущая версия: **1.2 (15/11/2025)**
+
 ## Особенности
 
 - 🚀 Быстрая проверка статуса посылки
@@ -48,3 +52,7 @@ open CorreoCheck.app
 - SwiftUI
 - Swift Package Manager
 - Correo Argentino API
+
+## Changelog
+
+- **1.2 (15/11/2025):**  — добавлены заметки к запросам

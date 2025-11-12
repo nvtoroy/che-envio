@@ -65,23 +65,34 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             // Верхний отступ и заголовок версии
-            VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    
-                    // Правая часть с версией в две строки
-                    VStack(alignment: .trailing, spacing: 0) {
-                        Text("Correo Argentino - Seguimiento")
+        VStack(spacing: 0) {
+            HStack {
+                if let note = viewModel.currentNote, !note.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(note)
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        Text("v1.1 (30/10/2025)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
                     }
+                    .frame(maxWidth: 320, alignment: .leading)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 10)
-                .padding(.bottom, 10)
+
+                Spacer()
+                
+                // Правая часть с версией в две строки
+                VStack(alignment: .trailing, spacing: 0) {
+                    Text("Correo Argentino - Seguimiento")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text("v1.2 (15/11/2025)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
                 
                 // Горизонтальная черта-отсекатель на всю ширину
                 Rectangle()
@@ -120,7 +131,7 @@ struct ContentView: View {
                                     handleHistoryCopy(entry)
                                 }
                             )
-                            .frame(width: 420, height: 320)
+                            .frame(width: 580, height: 320)
                         }
                     }
                     .frame(width: 180, alignment: .leading)
@@ -489,9 +500,7 @@ struct ContentView: View {
 
     private func applyHistoryEntry(_ entry: TrackingHistoryEntry) {
         isHistoryPresented = false
-        viewModel.producto = entry.left
-        viewModel.trackingNumber = entry.digits
-        viewModel.pais = entry.right
+        viewModel.selectFromHistory(entry)
         selectedHistoryCodes.removeAll()
         DispatchQueue.main.async {
             focusedField = .trackingNumber
@@ -600,6 +609,10 @@ private struct HistoryPopoverView: View {
 
                         Text("Código")
                             .font(.system(size: 11, weight: .bold))
+                            .frame(width: 130, alignment: .leading)
+
+                        Text("Notas")
+                            .font(.system(size: 11, weight: .bold))
                             .frame(maxWidth: .infinity, alignment: .leading)
 
                         Text("Copiar")
@@ -614,6 +627,7 @@ private struct HistoryPopoverView: View {
                         LazyVStack(spacing: 0) {
                             ForEach(filteredEntries) { entry in
                                 HistoryRow(
+                                    viewModel: viewModel,
                                     entry: entry,
                                     isSelected: selectionBinding(for: entry),
                                     onSelect: {
@@ -688,11 +702,29 @@ private struct HistoryPopoverView: View {
     }
 
     private struct HistoryRow: View {
+        let viewModel: CorreoCheckViewModel
         let entry: TrackingHistoryEntry
         @Binding var isSelected: Bool
         let onSelect: () -> Void
         let onCopy: () -> Void
         let copyAccessibilityLabel: String
+        @State private var noteText: String
+
+        init(viewModel: CorreoCheckViewModel,
+             entry: TrackingHistoryEntry,
+             isSelected: Binding<Bool>,
+             onSelect: @escaping () -> Void,
+             onCopy: @escaping () -> Void,
+             copyAccessibilityLabel: String) {
+            self.viewModel = viewModel
+            self.entry = entry
+            self._isSelected = isSelected
+            self.onSelect = onSelect
+            self.onCopy = onCopy
+            self.copyAccessibilityLabel = copyAccessibilityLabel
+            let initialNote = entry.meta.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            self._noteText = State(initialValue: initialNote)
+        }
 
         var body: some View {
             HStack(spacing: 12) {
@@ -711,7 +743,15 @@ private struct HistoryPopoverView: View {
                         .foregroundColor(.primary)
                 }
                 .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: 130, alignment: .leading)
+
+                TextField("Agregar nota...", text: $noteText)
+                    .textFieldStyle(PlainTextFieldStyle())
+                    .font(.system(size: 11))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .onChange(of: noteText) { _, newValue in
+                        viewModel.updateNote(for: entry.code, note: newValue)
+                    }
 
                 Button(action: onCopy) {
                     Image(systemName: "doc.on.doc")

@@ -55,9 +55,9 @@ struct TrackingHistoryMeta: Codable {
     }
 
     var source: Source
-    var note: String
+    var note: String?
 
-    init(source: Source, note: String = "") {
+    init(source: Source, note: String? = nil) {
         self.source = source
         self.note = note
     }
@@ -146,6 +146,7 @@ class CorreoCheckViewModel: ObservableObject {
             if sanitized != trackingNumber {
                 trackingNumber = sanitized
             }
+            updateCurrentNote()
         }
     }
     @Published var producto: String = "" {
@@ -154,6 +155,7 @@ class CorreoCheckViewModel: ObservableObject {
             if sanitized != producto {
                 producto = sanitized
             }
+            updateCurrentNote()
         }
     }
     @Published var pais: String = "" {
@@ -162,6 +164,7 @@ class CorreoCheckViewModel: ObservableObject {
             if sanitized != pais {
                 pais = sanitized
             }
+            updateCurrentNote()
         }
     }
     @Published var isLoading: Bool = false
@@ -173,6 +176,7 @@ class CorreoCheckViewModel: ObservableObject {
     @Published var isAutoFillEnabled: Bool = false
     @Published var historyEntries: [TrackingHistoryEntry] = []
     @Published var historySearchTerm: String = ""
+    @Published var currentNote: String? = nil
     
     private let settingsKey = "CorreoCheckSettings"
     private let historyKey = "CorreoCheckHistory"
@@ -195,6 +199,7 @@ class CorreoCheckViewModel: ObservableObject {
             self.pais = settings.pais
             self.isAutoFillEnabled = settings.isAutoFillEnabled
         }
+        updateCurrentNote()
     }
     
     func saveSettings() {
@@ -212,6 +217,7 @@ class CorreoCheckViewModel: ObservableObject {
     private func loadHistory() {
         guard let data = UserDefaults.standard.data(forKey: historyKey) else {
             historyEntries = []
+            updateCurrentNote()
             return
         }
 
@@ -222,6 +228,7 @@ class CorreoCheckViewModel: ObservableObject {
         } catch {
             historyEntries = []
         }
+        updateCurrentNote()
     }
 
     private func saveHistory() {
@@ -452,6 +459,33 @@ class CorreoCheckViewModel: ObservableObject {
         self.lastUpdateTime = formatter.string(from: Date())
     }
 
+    private func updateCurrentNote() {
+        guard let currentCode = makeCurrentHistoryCode() else {
+            currentNote = nil
+            return
+        }
+
+        guard let entry = historyEntries.first(where: { $0.code.caseInsensitiveCompare(currentCode) == .orderedSame }) else {
+            currentNote = nil
+            return
+        }
+
+        let trimmed = entry.meta.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        currentNote = trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func makeCurrentHistoryCode() -> String? {
+        let left = sanitizeLetters(producto)
+        let right = sanitizeLetters(pais)
+        let digits = trackingNumber.filter { $0.isNumber }
+
+        guard !left.isEmpty, !right.isEmpty, !digits.isEmpty else {
+            return nil
+        }
+
+        return "\(left)\(digits)\(right)"
+    }
+
     private func sanitizeLetters(_ text: String) -> String {
         let letters = text.uppercased().filter { $0.isLetter }
         return String(letters.prefix(2))
@@ -496,12 +530,14 @@ class CorreoCheckViewModel: ObservableObject {
     func clearHistory() {
         historyEntries.removeAll()
         saveHistory()
+        updateCurrentNote()
     }
 
     func deleteHistoryEntries(with codes: Set<String>) {
         guard !codes.isEmpty else { return }
         historyEntries.removeAll { codes.contains($0.code) }
         saveHistory()
+        updateCurrentNote()
     }
 
     func recordHistory(source: TrackingHistoryMeta.Source) {
@@ -535,6 +571,26 @@ class CorreoCheckViewModel: ObservableObject {
 
         historyEntries.sort { $0.lastCheckedAt > $1.lastCheckedAt }
         saveHistory()
+        updateCurrentNote()
+    }
+
+    func selectFromHistory(_ entry: TrackingHistoryEntry) {
+        producto = entry.left
+        trackingNumber = entry.digits
+        pais = entry.right
+        saveSettings()
+        updateCurrentNote()
+    }
+
+    func updateNote(for code: String, note: String) {
+        guard let index = historyEntries.firstIndex(where: { $0.code.caseInsensitiveCompare(code) == .orderedSame }) else {
+            return
+        }
+
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        historyEntries[index].meta.note = trimmedNote.isEmpty ? nil : trimmedNote
+        saveHistory()
+        updateCurrentNote()
     }
 
     func clearFields() {
@@ -542,5 +598,6 @@ class CorreoCheckViewModel: ObservableObject {
         trackingNumber = ""
         pais = ""
         saveSettings()
+        updateCurrentNote()
     }
 }
